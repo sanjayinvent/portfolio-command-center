@@ -53,7 +53,7 @@ class ApiConfigCreate(BaseModel):
 
 @router.get("/health")
 def health_check():
-    return {"status": "ok", "service": "Portfolio Command Center FastAPI", "version": "2.0"}
+    return {"status": "ok", "service": "PatelScope FastAPI Backend", "version": "2.0.1"}
 
 # ─── Holdings Endpoints ───────────────────────────────────────────────────────
 

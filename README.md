@@ -1,4 +1,4 @@
-# PatelScope — Portfolio Command Center (v2.0.0)
+# PatelScope — Portfolio Command Center (v2.0.1)
 
 **PatelScope** is a production-grade 3-tier local intranet web application for portfolio management, options yield optimization (Covered Calls, Put Collars, Cash Secured Puts), and 60-month transition modeling.
 
@@ -10,9 +10,11 @@
 
 ## Quick Start
 
-### 1. Launch Backend Infrastructure (Docker Compose)
+### 1. Launch Backend API (Python)
 ```bash
-docker compose up --build -d
+cd backend
+python3 -m pip install -r requirements.txt
+python3 -m uvicorn app.main:app --reload --port 8000
 ```
 
 ### 2. Start Frontend Web Server
@@ -21,4 +23,4 @@ npm run dev
 ```
 
 ### 3. Open in Browser
-Visit `http://localhost:5173` or `http://localhost`.
+Visit `http://localhost:1420` or `http://localhost:5173`.

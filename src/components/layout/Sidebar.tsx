@@ -44,7 +44,7 @@ export function Sidebar() {
       </div>
 
       <div className="sidebar-footer">
-        v2.0.0 • Intranet Web
+        v2.0.1 • Intranet Web
       </div>
     </aside>
   );

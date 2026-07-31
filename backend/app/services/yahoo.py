@@ -1,3 +1,7 @@
+import time
+import httpx
+from typing import Dict, Any
+
 CACHE_TTL_SEC = 60
 _CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -19,13 +23,11 @@ class YahooFinanceService:
 
         try:
             async with httpx.AsyncClient(headers=self.headers, follow_redirects=True) as client:
-                # 1. Establish cookie session
                 try:
                     await client.get("https://fc.yahoo.com")
                 except Exception as e:
                     print("Cookie session fetch warning:", e)
 
-                # 2. Retrieve crumb token
                 crumb = ""
                 try:
                     crumb_resp = await client.get("https://query2.finance.yahoo.com/v1/test/getcrumb")
@@ -34,7 +36,6 @@ class YahooFinanceService:
                 except Exception as e:
                     print("Crumb fetch warning:", e)
 
-                # 3. Initial option request
                 base_url = f"https://query2.finance.yahoo.com/v7/finance/options/{ticker}"
                 params = {"crumb": crumb} if crumb else {}
                 
@@ -61,7 +62,6 @@ class YahooFinanceService:
 
                 parsed_data = self._parse_chain_response(res, now_sec)
                 
-                # Update Cache
                 _CACHE[cache_key] = {
                     "timestamp": now_sec,
                     "data": parsed_data
@@ -78,12 +78,10 @@ class YahooFinanceService:
             data["data_source"] = f"{data['data_source']} (Cached)"
             return data
 
-        # Math fallback spot prices
         spot_prices = {"SPY": 542.80, "QQQ": 475.20, "AAPL": 225.50, "NVDA": 118.40, "AMZN": 182.00, "MSFT": 425.00}
         spot = spot_prices.get(ticker.upper(), 100.0)
         now_sec = int(time.time())
 
-        # Generate math options chain
         options = []
         for pct in [1, 2, 3, 5, 7, 10, 12, 15, 20]:
             call_strike = round(spot * (1 + pct / 100.0), 2)
