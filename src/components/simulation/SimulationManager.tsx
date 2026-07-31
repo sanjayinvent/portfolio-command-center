@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useState } from 'react';
+import { useApi } from '../../hooks/useApi';
 import { runSimulation, SimulationSnapshot } from '../../lib/simulation';
 import { fmt, fmtDec } from '../../lib/types';
 
 export function SimulationManager() {
-  const { getHoldings } = useDatabase();
+  const { getHoldings } = useApi();
   const [snapshots, setSnapshots] = useState<SimulationSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
 

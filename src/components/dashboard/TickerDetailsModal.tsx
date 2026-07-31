@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
+import { apiClient } from '../../services/apiClient';
 import { Holding, fmt, fmtDec } from '../../lib/types';
 
 interface TickerDetailsModalProps {
@@ -9,53 +9,33 @@ interface TickerDetailsModalProps {
 }
 
 export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps) {
-  const { getApiConfig } = useDatabase();
+  const { getApiConfig } = useApi();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Schwab Option Chain State
   const [schwabConnected, setSchwabConnected] = useState(false);
   const [optionChain, setOptionChain] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchOptions = async () => {
       try {
-        const schwabConfig = await getApiConfig('schwab');
-        if (schwabConfig && schwabConfig.oauth_token) {
+        const config = await getApiConfig('schwab');
+        if (config && config.is_active) {
           setSchwabConnected(true);
-          try {
-            const chain: any = await invoke('fetch_schwab_option_chain', {
-              ticker: holding.ticker,
-              accessToken: schwabConfig.oauth_token
-            });
-            
-            // Basic parsing of Schwab's Option Chain response (calls only for covered calls)
-            if (chain.callExpDateMap) {
-              const optionsData: any[] = [];
-              Object.keys(chain.callExpDateMap).forEach(expDate => {
-                const strikes = chain.callExpDateMap[expDate];
-                Object.keys(strikes).forEach(strike => {
-                  const contractInfo = strikes[strike][0];
-                  optionsData.push({
-                    strike: parseFloat(strike),
-                    daysToExpiration: contractInfo.daysToExpiration,
-                    bid: contractInfo.bid,
-                    ask: contractInfo.ask,
-                    delta: contractInfo.delta,
-                    theta: contractInfo.theta,
-                    volume: contractInfo.totalVolume
-                  });
-                });
-              });
-              
-              // Filter to roughly 30-45 DTE
-              const targetDte = optionsData.filter(o => o.daysToExpiration >= 28 && o.daysToExpiration <= 45);
-              setOptionChain(targetDte);
-            }
-          } catch (e) {
-            console.error("Schwab API fetch failed:", e);
-            setError("Failed to fetch live Option Chain from Schwab API.");
+        }
+        
+        // Fetch strategy simulation & options from Python backend
+        try {
+          const simData: any = await apiClient.simulateStrategy({
+            ticker: holding.ticker,
+            cost_basis: holding.avg_cost_basis || holding.cost_basis || 100,
+            shares: holding.shares || 100
+          });
+          if (simData && simData.options) {
+            setOptionChain(simData.options);
           }
+        } catch (e) {
+          console.error("Backend strategy simulate failed:", e);
         }
       } catch (err) {
         console.error(err);
@@ -65,11 +45,10 @@ export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps
     };
     
     fetchOptions();
-  }, [holding.ticker, getApiConfig]);
+  }, [holding.ticker]);
 
-  const currPrice = holding.current_price || 0;
+  const currPrice = holding.current_price || holding.market_price || 0;
   
-  // Calculate Target Strikes mathematically
   const targets = [
     { label: "5% OTM", pct: 1.05 },
     { label: "10% OTM", pct: 1.10 },
@@ -96,12 +75,12 @@ export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps
           </div>
           <div>
             <div className="text-sm text-muted">Cost Basis</div>
-            <div className="text-2xl font-bold">{fmt.format(holding.avg_cost_basis)}</div>
+            <div className="text-2xl font-bold">{fmt.format(holding.avg_cost_basis || holding.cost_basis || 0)}</div>
           </div>
           <div>
             <div className="text-sm text-muted">Next Earnings</div>
             <div className="text-xl font-bold text-blue">TBD</div>
-            <div className="text-xs text-muted">Requires Schwab Calendar</div>
+            <div className="text-xs text-muted">Python Option Engine</div>
           </div>
         </div>
 
@@ -111,8 +90,8 @@ export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps
           </div>
           <p className="text-sm text-muted mb-4">
             {schwabConnected 
-              ? "Live option chain data fetched from Charles Schwab API." 
-              : "Charles Schwab API not connected. Displaying mathematically calculated strike targets based on current live price. Connect Schwab in Settings to see live Bid/Ask premiums and Greeks."}
+              ? "Live option chain data fetched from API." 
+              : "Displaying calculated strike targets powered by Python FastAPI options engine."}
           </p>
 
           {error && <div className="text-red text-sm mb-4">{error}</div>}
@@ -134,12 +113,9 @@ export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps
               <tbody>
                 {targets.map(t => {
                   const calculatedTarget = currPrice * t.pct;
-                  
-                  // If we have schwab data, find the closest strike that is >= the calculated target
                   let closestStrike: any = null;
                   if (optionChain.length > 0) {
                     closestStrike = optionChain.reduce((prev, curr) => {
-                      // We only want strikes above the target
                       if (curr.strike < calculatedTarget) return prev;
                       if (!prev) return curr;
                       return (curr.strike - calculatedTarget < prev.strike - calculatedTarget) ? curr : prev;
@@ -151,12 +127,12 @@ export function TickerDetailsModal({ holding, onClose }: TickerDetailsModalProps
                       <td className="font-bold">{t.label}</td>
                       <td>{fmt.format(calculatedTarget)}</td>
                       
-                      {schwabConnected && closestStrike ? (
+                      {closestStrike ? (
                         <>
-                          <td className="font-bold text-blue">{fmt.format(closestStrike.strike)} ({closestStrike.daysToExpiration} DTE)</td>
-                          <td className="text-right text-green">{fmtDec.format(closestStrike.bid)} / {fmtDec.format(closestStrike.ask)}</td>
-                          <td className="text-right text-muted">{closestStrike.delta}</td>
-                          <td className="text-right text-muted">{closestStrike.theta}</td>
+                          <td className="font-bold text-blue">{fmt.format(closestStrike.strike)} ({closestStrike.daysToExpiration || 30} DTE)</td>
+                          <td className="text-right text-green">{fmtDec.format(closestStrike.bid || 0)} / {fmtDec.format(closestStrike.ask || 0)}</td>
+                          <td className="text-right text-muted">{closestStrike.delta || '--'}</td>
+                          <td className="text-right text-muted">{closestStrike.theta || '--'}</td>
                         </>
                       ) : (
                         <>

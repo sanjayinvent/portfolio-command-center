@@ -1,0 +1,78 @@
+name: V2 Intranet CI/CD Security Pipeline
+
+on:
+  push:
+    branches: [ main, v2-* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  secret-scan:
+    name: 1. Secret Scanning (TruffleHog)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog-main-action@main
+        with:
+          extra_args: --debug --only-verified
+
+  dependency-audit:
+    name: 2. Dependency Audit & SCA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+  pytest-testing:
+    name: 3. PyTest Unit & Integration Testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run PyTest
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pytest
+
+  container-security-scan:
+    name: 4. Container Vulnerability Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: [pytest-testing]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Docker API Image
+        run: |
+          docker build -t portfolio-api:ci ./backend
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'portfolio-api:ci'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'

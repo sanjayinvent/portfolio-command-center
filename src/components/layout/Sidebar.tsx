@@ -23,8 +23,8 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <h2>Command Center</h2>
-        <p>Portfolio Strategy</p>
+        <h2>PatelScope</h2>
+        <p>Portfolio Command Center</p>
       </div>
       
       <div className="sidebar-section">
@@ -44,7 +44,7 @@ export function Sidebar() {
       </div>
 
       <div className="sidebar-footer">
-        v0.1.0 • Local Only
+        v2.0.0 • Intranet Web
       </div>
     </aside>
   );

@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
+import { apiClient } from '../../services/apiClient';
 import { Holding, fmt, fmtDec } from '../../lib/types';
 import { HoldingFormModal } from './HoldingFormModal';
 
 export function HoldingsManager() {
   const [activeTab, setActiveTab] = useState<'stocks' | 'etfs'>('stocks');
-  const { getHoldings, getApiConfig, updateHoldingPrices } = useDatabase();
+  const { getHoldings, getApiConfig, updateHoldingPrices } = useApi();
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -26,27 +26,22 @@ export function HoldingsManager() {
   const handleFetchPrices = async () => {
     setFetchingPrices(true);
     try {
-      const config = await getApiConfig('finnhub');
-      if (!config || !config.api_key) {
-        alert('No Finnhub API Key found. Please add one in the Settings tab.');
-        setFetchingPrices(false);
-        return;
-      }
-      
       const tickers = holdings.map(h => h.ticker);
       if (tickers.length === 0) return;
 
-      // Invoke the Rust backend command
-      const results: [string, any][] = await invoke('fetch_quotes_batch', {
-        tickers,
-        apiKey: config.api_key
-      });
+      const updates: { ticker: string; price: number }[] = [];
+      for (const ticker of tickers) {
+        try {
+          const quote = await apiClient.fetchQuote(ticker);
+          if (quote && quote.c) {
+            updates.push({ ticker, price: quote.c });
+          }
+        } catch (qErr) {
+          console.error(`Failed to fetch quote for ${ticker}`, qErr);
+        }
+      }
       
-      if (results && results.length > 0) {
-        const updates = results.map(([ticker, quote]) => ({
-          ticker,
-          price: quote.c
-        }));
+      if (updates.length > 0) {
         await updateHoldingPrices(updates);
         await fetchHoldings();
       }
@@ -60,7 +55,7 @@ export function HoldingsManager() {
 
   useEffect(() => {
     fetchHoldings();
-  }, [getHoldings]);
+  }, []);
 
   const displayedHoldings = holdings.filter(h => h.asset_type === (activeTab === 'stocks' ? 'stock' : 'etf'));
 
@@ -132,7 +127,7 @@ export function HoldingsManager() {
               displayedHoldings.map((h) => {
                 const totalValue = h.shares * (h.current_price || 0);
                 return (
-                  <tr key={h.id}>
+                  <tr key={h.id || h.ticker}>
                     <td className="font-bold text-blue">{h.ticker}</td>
                     <td>{h.shares.toLocaleString()}</td>
                     <td>{fmtDec.format(h.avg_cost_basis)}</td>

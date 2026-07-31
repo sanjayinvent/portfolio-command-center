@@ -1,73 +1,79 @@
-# Portfolio Command Center Architecture
+# PatelScope Architectural Blueprint (v2.0.0)
+## Intranet 3-Tier Web Portal, Python FastAPI & DevOps CI/CD Pipeline
 
-This document outlines the architecture for the **Portfolio Command Center** native desktop application. The application provides a high-performance local dashboard to model and track a 5-year portfolio transition simulation.
+This document outlines the architecture for **PatelScope (v2.0.0)**, a **production-grade, 3-tier local intranet web application** powered by **Python FastAPI**, PostgreSQL, Docker containerization, automated CI/CD pipelines, and security scanning.
 
-## Technology Stack
+---
 
-- **Frontend**: React 19, TypeScript, Vite
-- **Backend / Desktop Shell**: Tauri v2 (Rust)
-- **Database**: Embedded SQLite (`tauri-plugin-sql`)
-- **External APIs**: Finnhub (Live market quotes)
-
-## System Architecture Diagram
+## 1. System Architecture: 3-Tier Production Design
 
 ```mermaid
 graph TD
-    subgraph Frontend [React Frontend (WebView)]
-        UI[User Interface Components]
-        Hooks[Custom Hooks e.g., useDatabase]
-        Router[React Router]
-        
-        UI --> Hooks
-        UI --> Router
+    subgraph PresentationTier["Tier 1: Presentation Layer"]
+        A["Browser / Client UI<br/>React / Vite / TypeScript"]
     end
 
-    subgraph Backend [Tauri Backend (Rust Core)]
-        IPC[Tauri IPC Command Handler]
-        Reqwest[Rust HTTP Client - reqwest]
-        
-        IPC --> Reqwest
+    subgraph ProxyTier["Reverse Proxy / Gateway"]
+        RP["NGINX / Traefik Reverse Proxy<br/>Port 80 / SSL Local Routing"]
     end
 
-    subgraph Data Layer [Local Storage]
-        SQLite[(SQLite Database\nportfolio.db)]
-        KeyStore[Encrypted Secure Store]
+    subgraph AppTier["Tier 2: Application / API Layer"]
+        API["Python 3.12 FastAPI Server<br/>Uvicorn / Pydantic / Schwab OAuth / Option Greeks Engine"]
+        Worker["Background Worker Service<br/>APScheduler / Celery"]
+        Redis[("Redis Cache & Job Queue")]
     end
 
-    subgraph External Services
-        Finnhub[Finnhub REST API]
+    subgraph DataTier["Tier 3: Data & Persistence Layer"]
+        DB[("PostgreSQL Database<br/>SQLAlchemy ORM / Encrypted OAuth Tokens")]
     end
 
-    %% Connections
-    Hooks -- "Tauri IPC (fetch_quote, etc)" --> IPC
-    Hooks -- "SQL Queries (tauri-plugin-sql)" --> SQLite
-    Reqwest -- "HTTPS GET" --> Finnhub
-    IPC -- "Reads/Writes API Keys" --> SQLite
+    subgraph ExternalAPIs["External APIs"]
+        Schwab["Charles Schwab OAuth & Market API"]
+        Yahoo["Yahoo Finance Option Chain API"]
+    end
+
+    A -->|HTTP / REST| RP
+    RP -->|HTTP| API
+    API -->|Async Tasks| Redis
+    Redis -->|Poll Tasks| Worker
+    API -->|SQL Queries| DB
+    Worker -->|Sync Quotes| ExternalAPIs
+    API -->|OAuth / Direct Fetch| ExternalAPIs
 ```
 
-## Data Flow & IPC
+### Component Breakdown
 
-1. **User Interactions**: When a user interacts with the React interface (e.g., clicking "Live Prices"), a request is initiated via React hooks.
-2. **Database Queries**: Standard CRUD operations (fetching holdings, adding positions) are routed directly from the React frontend to the SQLite database via the `@tauri-apps/plugin-sql` wrapper. The rust backend handles the actual disk writing securely.
-3. **API Calls**: External API calls (like fetching Finnhub prices) are **not** made directly from the browser. Instead:
-   - The React app invokes a Tauri IPC command (`invoke('fetch_quotes_batch')`).
-   - The Rust backend receives the command, executes the HTTP request securely using the `reqwest` crate, and parses the response.
-   - The Rust backend returns the payload back to the React frontend.
-   - The React frontend then updates the SQLite database with the new values.
+| Tier | Component | Technology Stack | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Tier 1** | Presentation Layer | **React 19 / Vite / TypeScript** | Rich interactive financial UI with sliders, P&L graphs, holdings management, and options strategies. |
+| **Ingress** | Reverse Proxy | **NGINX Container** | Handles local reverse proxying (`http://localhost/api/v1`), static routing, and SSL termination. |
+| **Tier 2** | Service API | **Python 3.12 (FastAPI + Pydantic + Uvicorn)** | Enterprise REST API handling Schwab OAuth 2.0, option Greeks, Black-Scholes models, holdings CRUD, and simulation math. |
+| **Tier 2** | Background Worker | **APScheduler / Celery + Redis** | Asynchronous Python worker service polling Schwab/Yahoo option chains and managing token auto-refreshes. |
+| **Tier 3** | Database | **PostgreSQL (Dockerized) + SQLAlchemy ORM** | Industrial relational database with migration support (Alembic) and Fernet/AES-256 token encryption. |
 
-## Database Schema (SQLite)
+---
 
-The application relies on a single-file SQLite database (`portfolio.db`) managed entirely locally. The primary tables include:
+## 2. Infrastructure & Local Container Setup
 
-| Table Name | Description |
-|---|---|
-| `holdings` | Core portfolio positions (Stocks and ETFs). Tracks shares, cost basis, current prices, and options strategies (e.g. Tax Loss Reserve, Call Yields). |
-| `option_contracts` | Tracks individual active and historical covered calls and puts. |
-| `transactions` | Ledger of executed buys, sells, dividends, and option premiums. |
-| `cash_flows` | Monthly inflow/outflow tracking, including fresh cash deployment and estimated taxes. |
-| `api_config` | Secure local storage for external provider keys (e.g., Finnhub API Key) and activation status. |
-| `simulation_scenarios` | Stores configuration parameters for 5-year modeling (growth rates, tax rates, deployment amounts). |
+The entire local infrastructure is orchestrated using Docker Compose (`docker-compose.yml`):
 
-## Security Model
-- **No Cloud Backend**: All user data, holdings, and simulation results live exclusively on the user's local file system.
-- **API Key Protection**: API keys are saved locally in the `api_config` SQLite table and are only utilized by the Rust backend. They are never exposed in standard web network requests where CORS or interception might be a risk.
+1. **`portfolio_db`**: Postgres 16 container storing holdings, option contracts, and API credentials.
+2. **`portfolio_redis`**: Redis 7 container handling caching for market quote feeds and option chains.
+3. **`portfolio_api`**: Python 3.12 FastAPI container servicing `/api/v1/` REST endpoints.
+4. **`portfolio_proxy`**: NGINX container routing traffic cleanly.
+
+To start the infrastructure locally:
+```bash
+docker compose up --build -d
+```
+
+---
+
+## 3. DevOps, CI/CD & Security Scanning Pipeline
+
+Automated quality and security checks configured via GitHub Actions (`.github/workflows/ci.yml`):
+
+1. **Secret Scanning**: TruffleHog scanner preventing API secrets or keys from being committed.
+2. **Dependency Audit**: Python package audit scanning `requirements.txt` for vulnerabilities.
+3. **PyTest Suite**: Unit and integration tests for FastAPI backend routes and options engines.
+4. **Container Vulnerability Scanning**: Trivy scanner inspecting Docker images.

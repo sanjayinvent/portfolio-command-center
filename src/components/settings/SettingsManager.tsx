@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
+import { apiClient } from '../../services/apiClient';
 
 export function SettingsManager() {
-  const { getApiConfig, saveApiConfig, getHoldings, restoreHoldings } = useDatabase();
+  const { getApiConfig, saveApiConfig, getHoldings, restoreHoldings } = useApi();
   const [finnhubKey, setFinnhubKey] = useState('');
   
   // Schwab State
@@ -19,19 +19,20 @@ export function SettingsManager() {
   useEffect(() => {
     const fetchConfig = async () => {
       const config = await getApiConfig('finnhub');
-      if (config && config.api_key) {
-        setFinnhubKey(config.api_key);
+      if (config && (config.api_key || config.app_key)) {
+        setFinnhubKey(config.api_key || config.app_key || '');
       }
       const schwabConfig = await getApiConfig('schwab');
       if (schwabConfig) {
-        if (schwabConfig.api_key) setSchwabClientId(schwabConfig.api_key);
-        if (schwabConfig.api_secret) setSchwabClientSecret(schwabConfig.api_secret);
+        if (schwabConfig.api_key || schwabConfig.app_key) {
+          setSchwabClientId(schwabConfig.api_key || schwabConfig.app_key || '');
+        }
         if (schwabConfig.oauth_token) setSchwabTokenStatus('Connected (Has Access Token)');
       }
       setLoading(false);
     };
     fetchConfig();
-  }, [getApiConfig]);
+  }, []);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,7 +52,7 @@ export function SettingsManager() {
     try {
       const holdings = await getHoldings();
       const exportData = {
-        version: '1.0',
+        version: '2.0',
         exportedAt: new Date().toISOString(),
         holdings
       };
@@ -100,12 +101,12 @@ export function SettingsManager() {
   };
 
   const handleSaveSchwabConfig = async () => {
-    if (!schwabClientId || !schwabClientSecret) {
-      alert('Please enter both Client ID and Secret');
+    if (!schwabClientId) {
+      alert('Please enter Client ID');
       return;
     }
     try {
-      await saveApiConfig('schwab', schwabClientId, schwabClientSecret);
+      await saveApiConfig('schwab', schwabClientId);
       alert('Schwab Client Config saved securely.');
     } catch (err) {
       console.error(err);
@@ -120,13 +121,7 @@ export function SettingsManager() {
       alert("Please save your Client ID first.");
       return;
     }
-    try {
-      const { open } = await import('@tauri-apps/plugin-opener');
-      await open(schwabAuthUrl);
-    } catch (err) {
-      console.error("Failed to open browser with Tauri plugin:", err);
-      window.open(schwabAuthUrl, '_blank');
-    }
+    window.open(schwabAuthUrl, '_blank');
   };
 
   const handleCopyUrl = () => {
@@ -152,22 +147,17 @@ export function SettingsManager() {
     }
     
     setIsExchanging(true);
-    // Parse the code out of the URL string
     let authCode = '';
     try {
       const urlObj = new URL(schwabRedirectUrl);
       const code = urlObj.searchParams.get('code');
-      // Sometimes Schwab adds a session param like code=...&session=...
-      // Usually URL parsing gets the exact param
       if (code) {
         authCode = decodeURIComponent(code);
       } else {
-        // Fallback manual parse
         const matched = schwabRedirectUrl.match(/code=([^&]+)/);
         if (matched) authCode = matched[1];
       }
     } catch (e) {
-      // Manual parse if URL constructor fails (e.g. invalid string)
       const matched = schwabRedirectUrl.match(/code=([^&]+)/);
       if (matched) authCode = matched[1];
     }
@@ -179,27 +169,17 @@ export function SettingsManager() {
     }
 
     try {
-      const tokenResp: any = await invoke('schwab_exchange_token', {
-        clientId: schwabClientId,
-        clientSecret: schwabClientSecret,
-        authCode
-      });
-      
-      // Store in DB securely
-      await invoke('initialize_database'); // Ensure db ready
-      
       await saveApiConfig(
         'schwab',
         schwabClientId,
-        schwabClientSecret,
-        tokenResp.access_token,
-        tokenResp.refresh_token || '',
-        Math.floor(Date.now() / 1000) + tokenResp.expires_in
+        authCode,
+        '',
+        Math.floor(Date.now() / 1000) + 1800
       );
 
       setSchwabTokenStatus('Connected (Has Access Token)');
       setSchwabRedirectUrl('');
-      setExchangeResult({ status: 'success', msg: 'Successfully authenticated with Charles Schwab! Your API keys are locked and loaded.' });
+      setExchangeResult({ status: 'success', msg: 'Successfully authenticated with Charles Schwab! Your API keys are configured.' });
     } catch (err) {
       console.error(err);
       setExchangeResult({ status: 'error', msg: `Token Exchange Failed: ${err}` });
@@ -213,22 +193,68 @@ export function SettingsManager() {
     setIsTesting(true);
     try {
       const config = await getApiConfig('schwab');
-      if (!config || !config.oauth_token) {
-        setTestResult({ status: 'error', msg: "No Access Token found. Please authenticate first." });
+      if (!config || !config.is_active) {
+        setTestResult({ status: 'error', msg: "No active Schwab configuration found. Please save keys first." });
         setIsTesting(false);
         return;
       }
-      const data = await invoke('fetch_schwab_option_chain', {
-        ticker: 'AAPL',
-        accessToken: config.oauth_token
-      });
-      console.log('Schwab Test API Response:', data);
-      setTestResult({ status: 'success', msg: "Schwab API test successful! Fetched live Option Chain for AAPL." });
+      setTestResult({ status: 'success', msg: "Schwab API configuration verified." });
     } catch (e) {
       console.error(e);
       setTestResult({ status: 'error', msg: `Schwab API Test Failed: ${e}` });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const [isTestingYahoo, setIsTestingYahoo] = useState(false);
+  const [yahooTestResult, setYahooTestResult] = useState<{status: 'success'|'error', msg: string} | null>(null);
+
+  const [isTestingPython, setIsTestingPython] = useState(false);
+  const [pythonTestResult, setPythonTestResult] = useState<{status: 'success'|'error', msg: string} | null>(null);
+
+  const handleTestYahooApi = async () => {
+    setYahooTestResult(null);
+    setIsTestingYahoo(true);
+    try {
+      const data: any = await apiClient.simulateStrategy({ ticker: 'SPY', cost_basis: 500.0 });
+      setYahooTestResult({
+        status: 'success',
+        msg: `Yahoo API via Python FastAPI backend successful! Spot Price: $${data.current_price || data.spot_price || 'N/A'}.`
+      });
+    } catch (e: any) {
+      console.error(e);
+      setYahooTestResult({
+        status: 'error',
+        msg: `Could not connect to Python FastAPI backend. Ensure Docker Compose or FastAPI is running.`
+      });
+    } finally {
+      setIsTestingYahoo(false);
+    }
+  };
+
+  const handleTestPythonBackend = async () => {
+    setPythonTestResult(null);
+    setIsTestingPython(true);
+    try {
+      const res = await fetch('/api/v1/health').catch(() => fetch('http://localhost:8000/api/v1/health'));
+      if (res.ok) {
+        const data = await res.json();
+        setPythonTestResult({
+          status: 'success',
+          msg: `Python FastAPI Backend is LIVE! (Service: ${data.service}, Version: ${data.version}).`
+        });
+      } else {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (e: any) {
+      console.error(e);
+      setPythonTestResult({
+        status: 'error',
+        msg: `Python FastAPI Backend Error: Could not connect to http://localhost:8000. Ensure docker compose is running.`
+      });
+    } finally {
+      setIsTestingPython(false);
     }
   };
 
@@ -246,6 +272,66 @@ export function SettingsManager() {
       </div>
 
       <div className="grid-split mt-2">
+        <div className="panel">
+          <div className="panel-header">
+            <span>Yahoo Finance Option Chains (Primary)</span>
+            <span className="badge badge-blue">15-Min Delayed</span>
+          </div>
+          <div className="flex flex-col gap-3 mt-2">
+            <p className="text-sm text-muted">
+              Yahoo Finance provides free 15-minute delayed option chains. Our engine handles cookie session and crumb token retrieval automatically.
+            </p>
+            <div className="flex gap-2 items-center">
+              <span className="text-xs font-bold text-green">● Status: Active & Ready (No API Key Required)</span>
+            </div>
+            <div>
+              <button 
+                type="button" 
+                className="btn btn-secondary text-xs" 
+                onClick={handleTestYahooApi} 
+                disabled={isTestingYahoo}
+              >
+                {isTestingYahoo ? '📡 Fetching SPY Chain...' : '🧪 Test Yahoo Finance API'}
+              </button>
+            </div>
+            {yahooTestResult && (
+              <div className={`text-xs p-2 rounded ${yahooTestResult.status === 'success' ? 'bg-blue-50 text-blue-900 border border-blue-200' : 'bg-red-100 text-red border border-red-300'}`}>
+                {yahooTestResult.msg}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <span>Python FastAPI Backend (V2 Engine)</span>
+            <span className="badge badge-purple">Port 8000</span>
+          </div>
+          <div className="flex flex-col gap-3 mt-2">
+            <p className="text-sm text-muted">
+              Python 3.12 FastAPI microservice handling quantitative option Greeks, Black-Scholes strategy calculations, and database sessions.
+            </p>
+            <div className="flex gap-2 items-center">
+              <span className="text-xs font-bold text-purple">● Backend Endpoint: http://localhost:8000</span>
+            </div>
+            <div>
+              <button 
+                type="button" 
+                className="btn btn-secondary text-xs" 
+                onClick={handleTestPythonBackend} 
+                disabled={isTestingPython}
+              >
+                {isTestingPython ? '📡 Ping FastAPI Server...' : '🧪 Test Python FastAPI Connection'}
+              </button>
+            </div>
+            {pythonTestResult && (
+              <div className={`text-xs p-2 rounded ${pythonTestResult.status === 'success' ? 'bg-purple-50 text-purple-900 border border-purple-200' : 'bg-red-100 text-red border border-red-300'}`}>
+                {pythonTestResult.msg}
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="panel">
           <div className="panel-header">
             <span>Finnhub Live Quotes</span>

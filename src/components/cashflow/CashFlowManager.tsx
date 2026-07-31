@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
 import { Holding, fmt } from '../../lib/types';
 
 export function CashFlowManager() {
-  const { getHoldings } = useDatabase();
+  const { getHoldings } = useApi();
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -19,9 +19,8 @@ export function CashFlowManager() {
       }
     };
     fetchHoldings();
-  }, [getHoldings]);
+  }, []);
 
-  // Derived current month metrics
   const FRESH_CASH = 5000;
   
   let stockOptIncome = 0;
@@ -35,8 +34,8 @@ export function CashFlowManager() {
     etfOptIncome += lots * (e.rate_per_lot || 0);
   });
 
-  const totalVal = holdings.reduce((sum, h) => sum + (h.shares * (h.current_price || 0)), 0);
-  const divIncome = totalVal * 0.0012; // 0.12% monthly proxy
+  const totalVal = holdings.reduce((sum, h) => sum + (h.shares * (h.current_price || h.market_price || 0)), 0);
+  const divIncome = totalVal * 0.0012;
 
   const totalGenerated = stockOptIncome + etfOptIncome + divIncome;
   const totalSweep = FRESH_CASH + totalGenerated;

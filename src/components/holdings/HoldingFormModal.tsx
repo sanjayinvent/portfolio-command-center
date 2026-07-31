@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
 
 interface HoldingFormModalProps {
   onClose: () => void;
@@ -7,7 +7,7 @@ interface HoldingFormModalProps {
 }
 
 export function HoldingFormModal({ onClose, onSuccess }: HoldingFormModalProps) {
-  const { addHolding } = useDatabase();
+  const { addHolding } = useApi();
   const [ticker, setTicker] = useState('');
   const [assetType, setAssetType] = useState<'stock'|'etf'>('stock');
   const [shares, setShares] = useState(0);

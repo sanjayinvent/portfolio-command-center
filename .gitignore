@@ -30,3 +30,5 @@ src-tauri/target/
 *.db
 *.sqlite
 .env*
+sanjay.txt
+

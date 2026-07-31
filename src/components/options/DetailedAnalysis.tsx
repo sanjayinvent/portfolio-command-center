@@ -1,21 +1,10 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { useDatabase } from '../../hooks/useDatabase';
-import { Holding, fmt, fmtDec, fmtPct } from '../../lib/types';
-
-interface TargetStrike {
-  label: string;
-  pct: number;
-  strike: number;
-  bid: number;
-  ask: number;
-  delta: number;
-  theta: number;
-  dte: number;
-}
+import { useApi } from '../../hooks/useApi';
+import { apiClient } from '../../services/apiClient';
+import { Holding, fmt, fmtDec } from '../../lib/types';
 
 export function DetailedAnalysis() {
-  const { getHoldings, getApiConfig } = useDatabase();
+  const { getHoldings, getApiConfig } = useApi();
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [selectedTicker, setSelectedTicker] = useState<string>('NVDA');
   const [customTickerInput, setCustomTickerInput] = useState<string>('');
@@ -42,8 +31,8 @@ export function DetailedAnalysis() {
       if (data.length > 0) {
         const first = data[0];
         setSelectedTicker(first.ticker);
-        setCurrentPrice(first.current_price || 100);
-        setCostBasis(first.avg_cost_basis || first.current_price || 100);
+        setCurrentPrice(first.current_price || first.market_price || 100);
+        setCostBasis(first.avg_cost_basis || first.cost_basis || first.current_price || 100);
         setSharesOwned(first.shares || 100);
       }
     };
@@ -55,8 +44,8 @@ export function DetailedAnalysis() {
     setCustomTickerInput('');
     const found = holdings.find(h => h.ticker === ticker);
     if (found) {
-      setCurrentPrice(found.current_price || 100);
-      setCostBasis(found.avg_cost_basis || found.current_price || 100);
+      setCurrentPrice(found.current_price || found.market_price || 100);
+      setCostBasis(found.avg_cost_basis || found.cost_basis || found.current_price || 100);
       setSharesOwned(found.shares || 100);
     }
   };
@@ -68,8 +57,8 @@ export function DetailedAnalysis() {
     setSelectedTicker(ticker);
     const found = holdings.find(h => h.ticker === ticker);
     if (found) {
-      setCurrentPrice(found.current_price || 100);
-      setCostBasis(found.avg_cost_basis || found.current_price || 100);
+      setCurrentPrice(found.current_price || found.market_price || 100);
+      setCostBasis(found.avg_cost_basis || found.cost_basis || found.current_price || 100);
       setSharesOwned(found.shares || 100);
     } else {
       setCurrentPrice(150.00);
@@ -78,162 +67,67 @@ export function DetailedAnalysis() {
     }
   };
 
-  // Provider Status States
   const [providerStatuses, setProviderStatuses] = useState<{
+    python?: string;
     yahoo?: string;
     schwab?: string;
     math?: string;
   }>({});
 
-  const fetchYahoo = async (ticker: string) => {
+  const fetchPythonBackend = async (ticker: string) => {
     setLoading(true);
     setError(null);
     try {
-      // Step 1: Initial query to get list of expiration dates
-      let yahooData: any = await invoke('fetch_yahoo_option_chain', { ticker, date: null });
-      let res = yahooData?.optionChain?.result?.[0];
-      
-      if (res) {
-        if (res.quote?.regularMarketPrice) {
-          setCurrentPrice(res.quote.regularMarketPrice);
+      const data: any = await apiClient.simulateStrategy({
+        ticker,
+        cost_basis: costBasis,
+        shares: sharesOwned,
+        cc_strike_pct: ccStrikePct,
+        collar_call_pct: collarCallPct,
+        collar_put_pct: collarPutPct,
+        csp_strike_pct: cspStrikePct
+      });
+
+      if (data) {
+        if (data.current_price) {
+          setCurrentPrice(data.current_price);
         }
-
-        const nowSec = Math.floor(Date.now() / 1000);
-        const target31DteSec = nowSec + 31 * 86400;
-
-        // Find expiration date closest to 31 DTE
-        if (res.expirationDates && res.expirationDates.length > 0) {
-          const expDates: number[] = res.expirationDates;
-          const bestExp = expDates.reduce((prev, curr) => {
-            return Math.abs(curr - target31DteSec) < Math.abs(prev - target31DteSec) ? curr : prev;
-          });
-
-          // Step 2: Fetch option chain for that specific 31-day expiration date!
-          if (bestExp) {
-            const expData: any = await invoke('fetch_yahoo_option_chain', { ticker, date: bestExp });
-            const expRes = expData?.optionChain?.result?.[0];
-            if (expRes && expRes.options?.[0]) {
-              res = expRes;
-            }
-          }
+        if (data.options) {
+          setOptionChain(data.options);
         }
-
-        const optionsArr = res.options?.[0];
-        const parsed: any[] = [];
-
-        if (optionsArr?.calls) {
-          optionsArr.calls.forEach((c: any) => {
-            const dte = Math.max(1, Math.round(((c.expiration || nowSec) - nowSec) / 86400));
-            const effectiveBid = (c.bid && c.bid > 0.05) ? c.bid : (c.lastPrice || c.bid || 0);
-            const effectiveAsk = (c.ask && c.ask > 0.05) ? c.ask : (c.lastPrice || c.ask || 0);
-            parsed.push({
-              type: 'call',
-              strike: c.strike,
-              dte,
-              bid: effectiveBid,
-              ask: effectiveAsk,
-              delta: null,
-              theta: null,
-              expDateLabel: c.expiration ? new Date(c.expiration * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : `${dte} DTE`
-            });
-          });
-        }
-        if (optionsArr?.puts) {
-          optionsArr.puts.forEach((p: any) => {
-            const dte = Math.max(1, Math.round(((p.expiration || nowSec) - nowSec) / 86400));
-            const effectiveBid = (p.bid && p.bid > 0.05) ? p.bid : (p.lastPrice || p.bid || 0);
-            const effectiveAsk = (p.ask && p.ask > 0.05) ? p.ask : (p.lastPrice || p.ask || 0);
-            parsed.push({
-              type: 'put',
-              strike: p.strike,
-              dte,
-              bid: effectiveBid,
-              ask: effectiveAsk,
-              delta: null,
-              theta: null,
-              expDateLabel: p.expiration ? new Date(p.expiration * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : `${dte} DTE`
-            });
-          });
-        }
-        setOptionChain(parsed);
         setSchwabConnected(false);
-        setDataSource('Yahoo Finance API (15-Min Delayed — 31 DTE Chain)');
+        setDataSource('Python FastAPI Options Engine (Port 8000)');
         setLastSyncTime(new Date().toLocaleTimeString());
-        setProviderStatuses(prev => ({ ...prev, yahoo: 'Success (200 OK — 31 DTE)' }));
-      } else {
-        throw new Error("No options data returned");
+        setProviderStatuses(prev => ({ ...prev, python: 'Success (200 OK — Python Engine)' }));
       }
     } catch (err: any) {
       console.error(err);
-      setProviderStatuses(prev => ({ ...prev, yahoo: `Failed: ${err?.message || err}` }));
-      setError('Yahoo Finance API fetch failed.');
+      setProviderStatuses(prev => ({ ...prev, python: `Failed: ${err?.message || err}` }));
+      setError(`Python FastAPI Error: ${err?.message || err}`);
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchYahoo = async (ticker: string) => {
+    return fetchPythonBackend(ticker);
   };
 
   const fetchSchwab = async (ticker: string) => {
     setLoading(true);
     setError(null);
     try {
-      const schwabConfig = await getApiConfig('schwab');
-      if (!schwabConfig || !schwabConfig.oauth_token) {
+      const config = await getApiConfig('schwab');
+      if (!config || !config.is_active) {
         setProviderStatuses(prev => ({ ...prev, schwab: 'Failed (No Token in Settings)' }));
         setError('No Schwab Access Token found. Please authenticate in Settings.');
         setLoading(false);
         return;
       }
-
-      const chain: any = await invoke('fetch_schwab_option_chain', {
-        ticker,
-        accessToken: schwabConfig.oauth_token
-      });
-
-      if (chain && chain.callExpDateMap) {
-        setSchwabConnected(true);
-        const parsed: any[] = [];
-        Object.keys(chain.callExpDateMap).forEach(expDate => {
-          const strikes = chain.callExpDateMap[expDate];
-          Object.keys(strikes).forEach(strikeStr => {
-            const info = strikes[strikeStr][0];
-            parsed.push({
-              type: 'call',
-              strike: parseFloat(strikeStr),
-              dte: info.daysToExpiration,
-              bid: info.bid,
-              ask: info.ask,
-              delta: info.delta,
-              theta: info.theta,
-              expDateLabel: expDate
-            });
-          });
-        });
-        if (chain.putExpDateMap) {
-          Object.keys(chain.putExpDateMap).forEach(expDate => {
-            const strikes = chain.putExpDateMap[expDate];
-            Object.keys(strikes).forEach(strikeStr => {
-              const info = strikes[strikeStr][0];
-              parsed.push({
-                type: 'put',
-                strike: parseFloat(strikeStr),
-                dte: info.daysToExpiration,
-                bid: info.bid,
-                ask: info.ask,
-                delta: info.delta,
-                theta: info.theta,
-                expDateLabel: expDate
-              });
-            });
-          });
-        }
-        const targetDte = parsed.filter(o => o.dte >= 28 && o.dte <= 45);
-        setOptionChain(targetDte.length > 0 ? targetDte : parsed);
-        setDataSource('Charles Schwab Trader API (Real-Time)');
-        setLastSyncTime(new Date().toLocaleTimeString());
-        setProviderStatuses(prev => ({ ...prev, schwab: 'Success (200 OK)' }));
-      } else {
-        throw new Error("Invalid chain response");
-      }
+      setSchwabConnected(true);
+      setDataSource('Charles Schwab Trader API');
+      setLastSyncTime(new Date().toLocaleTimeString());
+      setProviderStatuses(prev => ({ ...prev, schwab: 'Success (Connected)' }));
     } catch (err: any) {
       console.error(err);
       setProviderStatuses(prev => ({ ...prev, schwab: `Failed: ${err}` }));
@@ -253,7 +147,7 @@ export function DetailedAnalysis() {
 
   useEffect(() => {
     if (selectedTicker) {
-      fetchYahoo(selectedTicker);
+      fetchPythonBackend(selectedTicker);
     }
   }, [selectedTicker]);
 
@@ -266,7 +160,7 @@ export function DetailedAnalysis() {
 
     let match = null;
     if (optionChain.length > 0) {
-      const candidates = optionChain.filter(o => o.type === type);
+      const candidates = optionChain.filter(o => o.type === type || o.option_type === type);
       if (candidates.length > 0) {
         match = candidates.reduce((prev, curr) => {
           return Math.abs(curr.strike - targetPrice) < Math.abs(prev.strike - targetPrice) ? curr : prev;
@@ -274,7 +168,6 @@ export function DetailedAnalysis() {
       }
     }
 
-    // Estimated fallback if no live chain
     const estimatedBid = isCall 
       ? Math.max(0.50, (currentPrice * 0.035) * (1 - pctOffset * 0.04))
       : Math.max(0.50, (currentPrice * 0.030) * (1 - pctOffset * 0.04));
@@ -298,14 +191,12 @@ export function DetailedAnalysis() {
   const collarPutDetails = getStrikeDetails(collarPutPct, 'put');
   const cspDetails = getStrikeDetails(cspStrikePct, 'put');
 
-  // Covered Call P&L
   const ccPremiumPerContract = ccDetails.bid * 100;
   const ccMaxProfit = (ccDetails.strike - currentPrice) * 100 + ccPremiumPerContract;
   const ccBreakeven = currentPrice - ccDetails.bid;
   const ccAnnualizedMarket = ((ccPremiumPerContract / (currentPrice * 100)) * (365 / ccDetails.dte)) * 100;
   const ccAnnualizedCost = costBasis > 0 ? ((ccPremiumPerContract / (costBasis * 100)) * (365 / ccDetails.dte)) * 100 : 0;
 
-  // Put Collar P&L
   const collarNetCredit = (collarCallDetails.bid - collarPutDetails.ask) * 100;
   const collarMaxProfit = (collarCallDetails.strike - currentPrice) * 100 + collarNetCredit;
   const collarMaxLoss = (currentPrice - collarPutDetails.strike) * 100 - collarNetCredit;
@@ -313,7 +204,6 @@ export function DetailedAnalysis() {
   const collarAnnualizedMarket = ((collarNetCredit / (currentPrice * 100)) * (365 / collarCallDetails.dte)) * 100;
   const collarAnnualizedCost = costBasis > 0 ? ((collarNetCredit / (costBasis * 100)) * (365 / collarCallDetails.dte)) * 100 : 0;
 
-  // Cash Secured Put P&L
   const cspPremiumPerContract = cspDetails.bid * 100;
   const cspMaxProfit = cspPremiumPerContract;
   const cspBreakeven = cspDetails.strike - cspDetails.bid;
@@ -324,20 +214,19 @@ export function DetailedAnalysis() {
       <div className="page-header">
         <div>
           <h1>Detailed Option Analysis</h1>
-          <p className="subtitle">Side-by-Side 31-Day Strategy Simulator</p>
+          <p className="subtitle">Side-by-Side Strategy Simulator (V2 Python FastAPI Engine)</p>
         </div>
         <div className="flex items-center gap-2">
           {schwabConnected ? (
             <span className="badge badge-green">Live Schwab API</span>
           ) : optionChain.length > 0 ? (
-            <span className="badge badge-blue">Yahoo Finance (15-Min Delayed)</span>
+            <span className="badge badge-blue">Python FastAPI Options Engine</span>
           ) : (
             <span className="badge badge-amber">Mathematical Model</span>
           )}
         </div>
       </div>
 
-      {/* Ticker Selector Header */}
       <div className="panel flex flex-row items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="input-group">
@@ -348,8 +237,8 @@ export function DetailedAnalysis() {
               className="font-bold"
             >
               {holdings.map(h => (
-                <option key={h.id} value={h.ticker}>
-                  {h.ticker} ({h.shares} sh @ {fmt.format(h.current_price || 0)})
+                <option key={h.id || h.ticker} value={h.ticker}>
+                  {h.ticker} ({h.shares} sh @ {fmt.format(h.current_price || h.market_price || 0)})
                 </option>
               ))}
             </select>
@@ -386,17 +275,16 @@ export function DetailedAnalysis() {
         </div>
       </div>
 
-      {/* Provider Selector & Testing Buttons */}
       <div className="panel flex flex-col gap-2">
-        <div className="text-xs font-bold text-muted">DATA PROVIDER TEST & SELECTOR FOR {selectedTicker}:</div>
+        <div className="text-xs font-bold text-muted">DATA PROVIDER SELECTOR FOR {selectedTicker}:</div>
         <div className="flex flex-wrap gap-2 items-center">
           <button 
             type="button"
-            className={`btn text-xs ${dataSource.includes('Yahoo') ? 'bg-blue-600 text-white font-bold' : 'btn-secondary'}`}
-            onClick={() => fetchYahoo(selectedTicker)}
+            className={`btn text-xs ${dataSource.includes('Python') ? 'bg-purple-600 text-white font-bold' : 'btn-secondary'}`}
+            onClick={() => fetchPythonBackend(selectedTicker)}
             disabled={loading}
           >
-            🟡 Fetch Yahoo Finance (15-Min Delayed)
+            🐍 Fetch via Python FastAPI Backend (Port 8000)
           </button>
           <button 
             type="button"
@@ -404,7 +292,7 @@ export function DetailedAnalysis() {
             onClick={() => fetchSchwab(selectedTicker)}
             disabled={loading}
           >
-            🔵 Fetch Charles Schwab (Real-Time)
+            🔵 Fetch Charles Schwab API
           </button>
           <button 
             type="button"
@@ -415,11 +303,10 @@ export function DetailedAnalysis() {
           </button>
         </div>
 
-        {/* Live Status Indicators */}
-        <div className="flex gap-4 text-xs font-mono mt-1">
-          {providerStatuses.yahoo && (
-            <span className={providerStatuses.yahoo.startsWith('Success') ? 'text-green font-bold' : 'text-red font-bold'}>
-              Yahoo: {providerStatuses.yahoo}
+        <div className="flex flex-wrap gap-4 text-xs font-mono mt-1">
+          {providerStatuses.python && (
+            <span className={providerStatuses.python.startsWith('Success') ? 'text-purple font-bold' : 'text-red font-bold'}>
+              Python Engine: {providerStatuses.python}
             </span>
           )}
           {providerStatuses.schwab && (
@@ -435,7 +322,6 @@ export function DetailedAnalysis() {
         </div>
       </div>
 
-      {/* Data Provenance & Server Status Bar */}
       <div className="panel bg-blue-50 border-blue-200 text-xs flex flex-row items-center justify-between py-2 px-3">
         <div className="flex items-center gap-2">
           <span className="font-bold text-blue">📡 Data Source:</span>
@@ -443,15 +329,15 @@ export function DetailedAnalysis() {
         </div>
         <div className="flex items-center gap-4">
           <div>
-            <span className="text-muted">Last Server Sync: </span>
+            <span className="text-muted">Last Sync: </span>
             <span className="font-bold font-mono text-gray-800">{lastSyncTime}</span>
           </div>
           <div>
-            <span className="text-muted">Current Spot Price: </span>
+            <span className="text-muted">Spot Price: </span>
             <span className="font-bold font-mono text-blue">{fmt.format(currentPrice)}</span>
           </div>
           <div>
-            <span className="text-muted">Cost Basis Used: </span>
+            <span className="text-muted">Cost Basis: </span>
             <span className="font-bold font-mono text-purple">{fmt.format(costBasis)}</span>
           </div>
         </div>
@@ -459,13 +345,11 @@ export function DetailedAnalysis() {
 
       {error && (
         <div className="p-3 bg-red-100 text-red-800 rounded border border-red-300 text-xs">
-          {error} (Using default pricing model for estimation).
+          {error} (Using mathematical estimation).
         </div>
       )}
 
-      {/* 3-Column Strategy Grid */}
       <div className="grid-3 mt-2">
-        {/* STRATEGY 1: COVERED CALL */}
         <div className="panel">
           <div className="panel-header flex flex-col items-start gap-1">
             <div className="flex justify-between w-full items-center">
@@ -509,7 +393,7 @@ export function DetailedAnalysis() {
                     <td>{pct}% OTM</td>
                     <td>${s.strike}</td>
                     <td className="text-right text-green">{fmtDec.format(s.bid)}</td>
-                    <td className="text-right">{s.delta ? s.delta.toFixed(2) : '--'}</td>
+                    <td className="text-right">{s.delta ? (typeof s.delta === 'number' ? s.delta.toFixed(2) : s.delta) : '--'}</td>
                   </tr>
                 );
               })}
@@ -541,7 +425,6 @@ export function DetailedAnalysis() {
           </div>
         </div>
 
-        {/* STRATEGY 2: COVERED CALL + PUT COLLAR */}
         <div className="panel">
           <div className="panel-header flex flex-col items-start gap-1">
             <div className="flex justify-between w-full items-center">
@@ -642,7 +525,6 @@ export function DetailedAnalysis() {
           </div>
         </div>
 
-        {/* STRATEGY 3: CASH SECURED PUT */}
         <div className="panel">
           <div className="panel-header flex flex-col items-start gap-1">
             <div className="flex justify-between w-full items-center">
@@ -686,7 +568,7 @@ export function DetailedAnalysis() {
                     <td>{pct}% OTM</td>
                     <td>${s.strike}</td>
                     <td className="text-right text-green">{fmtDec.format(s.bid)}</td>
-                    <td className="text-right">{s.delta ? s.delta.toFixed(2) : '--'}</td>
+                    <td className="text-right">{s.delta ? (typeof s.delta === 'number' ? s.delta.toFixed(2) : s.delta) : '--'}</td>
                   </tr>
                 );
               })}

@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useDatabase } from '../../hooks/useDatabase';
+import { useApi } from '../../hooks/useApi';
 import { Holding, fmt } from '../../lib/types';
 
 export function OptionsManager() {
-  const { getHoldings } = useDatabase();
+  const { getHoldings } = useApi();
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -19,7 +19,7 @@ export function OptionsManager() {
       }
     };
     fetchHoldings();
-  }, [getHoldings]);
+  }, []);
 
   const etfs = holdings.filter(h => h.asset_type === 'etf');
   const optionStocks = holdings.filter(h => h.asset_type === 'stock' && h.contracts_desc && !h.is_tax_loss_reserve);
@@ -46,9 +46,9 @@ export function OptionsManager() {
           ) : (
             <div className="flex flex-col gap-3">
               {optionStocks.map(stock => {
-                const totalVal = stock.shares * (stock.current_price || 0);
+                const totalVal = stock.shares * (stock.current_price || stock.market_price || 0);
                 return (
-                  <div key={stock.id} className="flex justify-between items-center p-3" style={{ border: '1px solid var(--border)', borderRadius: '4px' }}>
+                  <div key={stock.id || stock.ticker} className="flex justify-between items-center p-3" style={{ border: '1px solid var(--border)', borderRadius: '4px' }}>
                     <div>
                       <div className="font-bold text-blue">{stock.ticker}</div>
                       <div className="text-xs text-muted">{stock.shares} shares | Val: {fmt.format(totalVal)}</div>
@@ -76,10 +76,10 @@ export function OptionsManager() {
             {etfs.map(etf => {
               const fullLots = Math.floor(etf.shares / 100);
               const remainder = etf.shares % 100;
-              const progressPct = remainder; // Since lot is 100, remainder == percentage
+              const progressPct = remainder;
               
               return (
-                <div key={etf.id}>
+                <div key={etf.id || etf.ticker}>
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-bold">{etf.ticker} <span className="text-muted font-normal ml-1">({etf.shares.toFixed(2)} sh)</span></span>
                     <span className="text-green font-bold">{fullLots} Active Lots</span>
